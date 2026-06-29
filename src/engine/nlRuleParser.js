@@ -106,22 +106,30 @@ function isAmbiguousInput(text) {
 const UNRESOLVABLE_MSG =
   'No discount value or threshold specified — please include a percentage/amount and a condition.'
 
+function cleanAppliesTo(raw) {
+  return raw
+    .trim()
+    .replace(/^for\s+/i, '')
+    .replace(/^on\s+(?:all\s+)?/i, '')
+    .replace(/\s+items?$/i, '')
+    .replace(/,\s*stackable.*$/i, '')
+    .trim()
+}
+
 function parseRuleLocally(text) {
   if (isAmbiguousInput(text)) {
     return { success: false, reason: UNRESOLVABLE_MSG }
   }
 
-  if (
-    /discount|offer|deal/i.test(text) &&
-    !/\d/.test(text)
-  ) {
+  if (/discount|offer|deal/i.test(text) && !/\d/.test(text)) {
     return { success: false, reason: UNRESOLVABLE_MSG }
   }
 
   const stackable = /\bstackable\b/i.test(text) || /\bstack(s)?\s+with\b/i.test(text)
 
+  // PDF: "10% off if cart value is more than Rs.5,000"
   const cartMatch = text.match(
-    /(\d+(?:\.\d+)?)\s*%\s*off.*?(?:cart|order).*?(?:more than|over|above|at least|≥|>=?)\s*Rs?\.?\s*([\d,]+)/i
+    /(\d+(?:\.\d+)?)\s*%\s*off\b.*?(?:cart|order)\b.*?(?:more than|over|above|at least|≥|>=?)\s*Rs?\.?\s*([\d,]+)/i
   )
   if (cartMatch) {
     return validateParsedRule({
@@ -134,49 +142,46 @@ function parseRuleLocally(text) {
     })
   }
 
+  // PDF: "Rs.100 flat discount on all Flipkart items"
   const flatPlatformMatch = text.match(
-    /Rs?\.?\s*([\d,]+)\s*(?:flat\s+)?(?:discount|off).*?(?:on\s+)?(?:all\s+)?(.+?)\s*(?:items?|products?)?$/i
+    /Rs\.?\s*([\d,]+)\s+flat\s+discount\s+on\s+(?:all\s+)?(.+?)\s+items?\b/i
   )
-  if (flatPlatformMatch && /flipkart|amazon|noon|platform/i.test(text)) {
-    const appliesTo = flatPlatformMatch[2].trim().replace(/\s+items?$/i, '')
+  if (flatPlatformMatch) {
     return validateParsedRule({
       scope: 'platform',
-      appliesTo,
+      appliesTo: cleanAppliesTo(flatPlatformMatch[2]),
       type: 'flat',
       value: parseFloat(flatPlatformMatch[1].replace(/,/g, '')),
       stackable: stackable || false,
     })
   }
 
+  // PDF: "20% off for Natura Casa brand, stackable with other offers"
   const brandPctMatch = text.match(
-    /(\d+(?:\.\d+)?)\s*%\s*off.*?(?:for\s+)?(.+?)\s*brand/i
+    /(\d+(?:\.\d+)?)\s*%\s*off\s+for\s+(.+?)\s+brand\b/i
   )
   if (brandPctMatch) {
     return validateParsedRule({
       scope: 'brand',
-      appliesTo: brandPctMatch[2].trim(),
+      appliesTo: cleanAppliesTo(brandPctMatch[2]),
       type: 'percentage',
       value: parseFloat(brandPctMatch[1]),
       stackable,
     })
   }
 
+  // Generic platform percentage: "15% off on all Amazon India items"
   const platformPctMatch = text.match(
-    /(\d+(?:\.\d+)?)\s*%\s*off.*?(?:on\s+)?(?:all\s+)?(.+?)\s*(?:items?|products?)?$/i
+    /(\d+(?:\.\d+)?)\s*%\s*off\s+(?:on\s+)?(?:all\s+)?(.+?)\s+items?\b/i
   )
-  if (platformPctMatch && /flipkart|amazon|noon|platform/i.test(text)) {
+  if (platformPctMatch) {
     return validateParsedRule({
       scope: 'platform',
-      appliesTo: platformPctMatch[2].trim().replace(/\s+items?$/i, ''),
+      appliesTo: cleanAppliesTo(platformPctMatch[2]),
       type: 'percentage',
       value: parseFloat(platformPctMatch[1]),
       stackable,
     })
-  }
-
-  const pctOnly = text.match(/^(\d+(?:\.\d+)?)\s*%$/)
-  if (pctOnly) {
-    return { success: false, reason: UNRESOLVABLE_MSG }
   }
 
   return null
@@ -187,13 +192,16 @@ async function callAnthropic(text) {
     return { success: false, reason: UNRESOLVABLE_MSG }
   }
 
+  // Try local parser first — reliable for assignment PDF examples (works without API credits)
+  const localFirst = parseRuleLocally(text)
+  if (localFirst?.success) return localFirst
+  if (localFirst?.success === false) return localFirst
+
   const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY?.trim()
   if (!apiKey || apiKey === 'your_anthropic_api_key_here') {
-    const local = parseRuleLocally(text)
-    if (local) return local
     return {
       success: false,
-      reason: 'Could not parse this rule locally. Add VITE_ANTHROPIC_API_KEY to .env for full LLM parsing, or use a clearer phrase like "20% off for Natura Casa brand, stackable".',
+      reason: 'Could not parse this rule. Try a full phrase like "20% off for Natura Casa brand, stackable", or add VITE_ANTHROPIC_API_KEY for LLM parsing.',
     }
   }
 
@@ -216,7 +224,8 @@ async function callAnthropic(text) {
   if (!response.ok) {
     const errBody = await response.text().catch(() => '')
     const local = parseRuleLocally(text)
-    if (local) return local
+    if (local?.success) return local
+    if (local?.success === false) return local
     return { success: false, reason: `LLM request failed (${response.status}). ${errBody.slice(0, 120)}` }
   }
 
