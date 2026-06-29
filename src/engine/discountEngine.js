@@ -7,12 +7,13 @@
  * Data shapes:
  *
  * DiscountRule {
- *   ruleId:    string       — e.g. "RULE-01"
- *   scope:     "brand" | "platform"
- *   appliesTo: string       — e.g. "Natura Casa", "Amazon India"
- *   type:      "percentage" | "flat"
- *   value:     number       — percentage as integer (15 = 15%), flat in rupees
- *   stackable: boolean
+ *   ruleId:       string       — e.g. "RULE-01"
+ *   scope:        "brand" | "platform" | "cart"
+ *   appliesTo:    string       — e.g. "Natura Casa", "Amazon India" (empty for cart)
+ *   type:         "percentage" | "flat"
+ *   value:        number       — percentage as integer (15 = 15%), flat in rupees
+ *   stackable:    boolean
+ *   minCartValue: number       — optional, required for cart-scope rules
  * }
  *
  * CartItem {
@@ -41,6 +42,7 @@
  * Returns true if the rule applies to this cart item.
  */
 export function ruleMatchesItem(item, rule) {
+  if (rule.scope === 'cart') return false
   const normalise = (s) => s.trim().toLowerCase()
   if (rule.scope === 'brand') {
     return normalise(item.brand) === normalise(rule.appliesTo)
@@ -171,4 +173,34 @@ export function processCart(cartItems, rules) {
  */
 export function cartTotal(results) {
   return results.reduce((sum, r) => sum + r.finalPrice, 0)
+}
+
+/**
+ * Evaluates cart-scope rules against the sum of final item prices.
+ * Runs strictly after processCart — does not modify item-level results.
+ */
+export function applyCartOffer(results, rules) {
+  const subtotal = cartTotal(results)
+  const cartRules = rules.filter((r) => r.scope === 'cart')
+
+  if (cartRules.length === 0) {
+    return { applied: false, discountAmount: 0, finalTotal: subtotal, rule: null, subtotal }
+  }
+
+  const eligible = cartRules.filter(
+    (r) => r.minCartValue != null && subtotal >= r.minCartValue
+  )
+
+  if (eligible.length === 0) {
+    return { applied: false, discountAmount: 0, finalTotal: subtotal, rule: null, subtotal }
+  }
+
+  const winner = [...eligible].sort(
+    (a, b) => calculateDiscountAmount(subtotal, b) - calculateDiscountAmount(subtotal, a)
+  )[0]
+
+  const discountAmount = calculateDiscountAmount(subtotal, winner)
+  const finalTotal = subtotal - discountAmount
+
+  return { applied: true, discountAmount, finalTotal, rule: winner, subtotal }
 }
