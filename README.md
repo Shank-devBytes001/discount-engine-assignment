@@ -4,7 +4,7 @@ FDE Intern assignment — customer-facing cart pricing with item-level discounts
 
 ## Live demo
 
-**https://discount-engine-rouge.vercel.app/** ← replace after deploying to Vercel/Netlify
+**https://discount-engine-rouge.vercel.app/** 
 
 ## Run locally (3 steps)
 
